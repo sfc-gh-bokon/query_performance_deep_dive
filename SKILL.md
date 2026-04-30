@@ -153,6 +153,8 @@ For each child, determine:
 
 Focus on children that account for >10% of total runtime.
 
+**⚠️ Temp table shadowing check:** Before interpreting any scan size, scan the full list of children for `CREATE TEMPORARY TABLE <name>` statements. If a subsequent child JOINs or scans a table with that same name, it is reading the **temp table**, not the permanent table — even if the permanent table is large. Do not recommend clustering or restructuring the permanent table based on scan metrics that actually reflect the temp table. Cross-reference: `CHILD_SQL ILIKE 'CREATE%TEMPORARY%TABLE%<name>%'` in the child list.
+
 #### Warehouse Sizing Check (Enhancement: Spill Analysis)
 
 After listing children, calculate aggregate spill and scan metrics to assess warehouse sizing:
@@ -265,13 +267,16 @@ After completing all drill-downs, build the Mermaid execution tree (see Step 3 t
 | Signal | Anti-Pattern | Fix |
 |--------|-------------|-----|
 | 1000+ children, same hash, 1 row each | **Row-at-a-time loop** | Replace with set-based INSERT/UPDATE |
-| High broadcasts (>5), scan >> output rows | **Missing temp table stats** | `SELECT COUNT(*) FROM temp_table` after populate |
+| High broadcasts (>5), scan >> output rows | **Missing temp table stats** | Materialize intermediate result into a new temp table to force cardinality re-evaluation |
 | Billions of rows inserted → immediate DISTINCT | **Join explosion / fan-out** | Staged dedup joins with early DISTINCT |
 | 10-30 UPDATEs on same table, different columns | **Serial UPDATE chain** | Merge into fewer UPDATEs with LEFT JOINs or pivoted MAX(CASE WHEN) |
 | DELETE scans full table on large table | **CDC DELETE on unclustered table** | Cluster on DELETE predicate column |
 | Many independent statements running serially | **Serial execution** | Parallelize with Tasks or async |
 | 12 identical CALLs differing only by filter | **Repeated identical join** | Pivoted single-pass UPDATE |
 | MERGE scans full target table, low partition pruning ratio | **MERGE on unclustered target** | Cluster target on MERGE ON-clause filter column |
+
+**Additional checks when temp tables are present:**
+- For each `CREATE TEMPORARY TABLE <name>` in the SP, verify the name does not collide with a permanent table or view in the same schema (see Pattern 9 in `references/anti-patterns.md`). Ask the customer to run the `information_schema.tables` check provided there.
 
 **Additional checks for MERGE statements:**
 - Calculate **partition pruning ratio**: `numPartitionsScanned / numPartitionsTotal`. A ratio near 1.0 means no pruning is occurring — strong signal for clustering.
@@ -301,7 +306,7 @@ Assign a risk level to each recommendation's implementation:
 
 | Risk | Definition | Label |
 |------|-----------|-------|
-| **Safe** | Read-only or additive change, no logic modification (e.g., adding `SELECT COUNT(*)`, adding cluster key) | "SAFE — no logic change, can apply immediately" |
+| **Safe** | Read-only or additive change, no logic modification (e.g., adding cluster key) | "SAFE — no logic change, can apply immediately" |
 | **Low** | Minor logic change, equivalent behavior guaranteed (e.g., combining 2 UPDATEs into 1 with same WHERE) | "LOW RISK — equivalent logic, verify with unit tests" |
 | **Moderate** | Structural logic change, behavior should be equivalent but needs validation (e.g., replacing loop with set-based, rewriting JOINs) | "MODERATE RISK — logic change, requires testing cycle" |
 

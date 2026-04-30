@@ -46,10 +46,10 @@ Each pattern below includes:
 - MEDIUM: 2-5 broadcasts — could be other causes
 - LOW: 1 broadcast — normal optimizer behavior in some cases
 
-**Fix:** `SELECT COUNT(*) FROM temp_table;` after populating, before JOINs
-**Risk:** SAFE — no logic change, can apply immediately (millisecond cost)
+**Fix:** Restructure the stored procedure to break the problematic join into two steps: materialize the intermediate result into a new temp table, then join against it. This forces the optimizer to re-evaluate cardinality at each step. Alternatively, restructure the JOIN subquery to expose row counts earlier in the plan.
+**Risk:** MODERATE — requires query restructure; validate output correctness with unit tests
 **Impact:** 50-90% scan reduction
-**Severity:** P0 (zero risk, millisecond cost)
+**Severity:** P0
 
 **Related Reading:**
 - [Snowflake Docs: Query Optimization — Join Strategies](https://docs.snowflake.com/en/user-guide/performance-query)
@@ -212,6 +212,37 @@ Each pattern below includes:
 
 ---
 
+## Pattern 9: Temp Table Name Shadowing [CORRECTNESS / MISDIAGNOSIS TRAP]
+
+**The trap:** When analyzing child statements, you see a JOIN or scan against a table whose name matches a known large permanent table and assume the permanent table is being scanned. In reality, an earlier child statement created a temporary table with the same name populated with a small filtered subset. All subsequent references in the session resolve to the temp table, not the permanent one. This causes false diagnoses such as recommending clustering on the permanent table for a scan that is actually against a tiny temp table.
+
+**Detection:**
+- Scan the ordered child statement list for `CREATE TEMPORARY TABLE <name>` before the slow child
+- If found, all later references to `<name>` in the SP resolve to the temp table
+- Confirm by comparing `SCAN_GB` in the slow child against the known size of the permanent table — if `SCAN_GB` is far smaller than the permanent table, the scan is against the temp table
+- Also check: SP contains `CREATE TEMPORARY TABLE <name>` where `<name>` matches a permanent table or view in the same schema
+
+**Confidence guidance:**
+- HIGH: earlier sibling child statement creates a temp table with the exact same name AND scan size is far smaller than the permanent table — definitive
+- MEDIUM: name match exists but scan size is ambiguous
+
+**Check:** Ask the customer to run against their account:
+```sql
+SELECT table_name, table_schema, table_type
+FROM information_schema.tables
+WHERE table_schema = '<schema>'
+  AND table_name = '<temp_table_name>'
+  AND table_type IN ('BASE TABLE', 'VIEW');
+```
+If any rows are returned, the temp table is shadowing that object for the duration of the session.
+
+**Fix:** Rename the temp table to an unambiguous name (e.g., prefix with `TMP_`). Re-examine the child that appeared slow — if it was scanning the temp table all along, the real bottleneck may lie elsewhere in the SP.
+**Risk:** LOW — rename only; no logic change required
+**Impact:** Corrects misdiagnosis; may redirect optimization effort to the true bottleneck
+**Severity:** P0 (correctness) when shadowing is unintentional
+
+---
+
 ## Quick Classification Matrix
 
 | Signal | Pattern | Severity | Risk | Confidence Hint |
@@ -224,6 +255,7 @@ Each pattern below includes:
 | Many independent statements serial | Serial exec (P6) | [WARNING] P1 | MODERATE | HIGH if clearly independent |
 | N identical CALLs, different filter | Repeated join (P7) | [WARNING] P1 | LOW | HIGH if >5 identical calls |
 | MERGE full scan, no partition pruning | MERGE unclustered (P8) | [CRITICAL] P0 | SAFE | HIGH if pruning ratio >90% |
+| Temp table name matches permanent table/view | Name shadowing (P9) | [CRITICAL] P0 (correctness) | LOW | HIGH if exact name match in same schema |
 
 ## Spill Assessment Notes
 
