@@ -34,20 +34,22 @@ Each pattern below includes:
 
 ---
 
-## Pattern 2: Missing Temp Table Statistics [CRITICAL]
+## Pattern 2: Complex Join Graph — Optimizer Build/Probe Suboptimality [CRITICAL]
+
+**Root cause:** Snowflake maintains accurate micro-partition metadata (row counts, min/max values) immediately after any DML, so the optimizer *does* have statistics for freshly populated temp tables. The problem is structural: in deeply nested CTEs and complex multi-way JOIN graphs, the optimizer can assign suboptimal build/probe sides to hash joins — choosing to broadcast a large table when it should use the small driving set as the build side. Breaking the join into explicit materialized steps forces the optimizer to plan each step against a simple, single-table input rather than trying to reason through a multi-way join graph all at once.
 
 **Detection:**
 - `hashJoinNumberBroadcastDecisions` > 5
 - Scan disproportionate to output rows
-- Temp table populated just before the JOIN but no stats collected
+- Deep CTE or multi-table JOIN in the bottleneck statement
 
 **Confidence guidance:**
-- HIGH: >5 broadcasts AND temp table in FROM clause — definitive
+- HIGH: >5 broadcasts AND complex CTE/multi-table join — definitive
 - MEDIUM: 2-5 broadcasts — could be other causes
 - LOW: 1 broadcast — normal optimizer behavior in some cases
 
-**Fix:** Restructure the stored procedure to break the problematic join into two steps: materialize the intermediate result into a new temp table, then join against it. This forces the optimizer to re-evaluate cardinality at each step. Alternatively, restructure the JOIN subquery to expose row counts earlier in the plan.
-**Risk:** MODERATE — requires query restructure; validate output correctness with unit tests
+**Fix:** Break the problematic join into explicit steps: materialize the intermediate driving set into a narrow temp table first, then join from that known-size table. This forces the optimizer to plan each step independently with a simple input rather than a complex graph.
+**Risk:** SAFE — CTAS/CREATE TEMP TABLE steps are additive; output is functionally identical
 **Impact:** 50-90% scan reduction
 **Severity:** P0
 

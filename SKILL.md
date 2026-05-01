@@ -267,7 +267,7 @@ After completing all drill-downs, build the Mermaid execution tree (see Step 3 t
 | Signal | Anti-Pattern | Fix |
 |--------|-------------|-----|
 | 1000+ children, same hash, 1 row each | **Row-at-a-time loop** | Replace with set-based INSERT/UPDATE |
-| High broadcasts (>5), scan >> output rows | **Missing temp table stats** | Materialize intermediate result into a new temp table to force cardinality re-evaluation |
+| High broadcasts (>5), scan >> output rows | **Complex join graph** | Materialize the intermediate driving set into a narrow temp table; forces optimizer to plan each step with a simple input |
 | Billions of rows inserted → immediate DISTINCT | **Join explosion / fan-out** | Staged dedup joins with early DISTINCT |
 | 10-30 UPDATEs on same table, different columns | **Serial UPDATE chain** | Merge into fewer UPDATEs with LEFT JOINs or pivoted MAX(CASE WHEN) |
 | DELETE scans full table on large table | **CDC DELETE on unclustered table** | Cluster on DELETE predicate column |
@@ -306,7 +306,7 @@ Assign a risk level to each recommendation's implementation:
 
 | Risk | Definition | Label |
 |------|-----------|-------|
-| **Safe** | Read-only or additive change, no logic modification (e.g., adding cluster key) | "SAFE — no logic change, can apply immediately" |
+| **Safe** | Read-only or additive change, no logic modification (e.g., adding cluster key, adding intermediate CTAS step to break a join) | "SAFE — no logic change, can apply immediately" |
 | **Low** | Minor logic change, equivalent behavior guaranteed (e.g., combining 2 UPDATEs into 1 with same WHERE) | "LOW RISK — equivalent logic, verify with unit tests" |
 | **Moderate** | Structural logic change, behavior should be equivalent but needs validation (e.g., replacing loop with set-based, rewriting JOINs) | "MODERATE RISK — logic change, requires testing cycle" |
 
@@ -582,14 +582,14 @@ Current: <X> min → Projected: <Y> min (<Z>% improvement)
 | Term | Definition |
 |------|-----------|
 | **Spill** | When a query's intermediate results exceed available memory and are written to local or remote disk, significantly slowing execution. |
-| **Broadcast Join** | A join strategy where the smaller table is copied to all nodes. Efficient for small tables, but catastrophic when the optimizer misjudges table size (common with temp tables lacking statistics). |
+| **Broadcast Join** | A join strategy where the smaller table is copied to all nodes. Efficient for small tables, but catastrophic when the optimizer chooses the wrong build/probe side assignment in a complex multi-way join graph. |
 | **Fan-out** | When a JOIN produces more rows than either input table due to many-to-many key matches. Fan-out ratio = output rows / input rows. |
 | **Parameterized Hash** | A fingerprint of a query's structure (ignoring literal values). Used to group identical queries with different parameters. |
 | **Cluster Key** | A set of columns that Snowflake uses to physically co-locate related rows in micro-partitions, enabling partition pruning for faster scans. |
 | **Partition Pruning** | Skipping entire micro-partitions during a scan because their metadata shows they cannot contain matching rows. |
 | **Cursor Loop** | An anti-pattern where a stored procedure processes rows one-at-a-time in a loop instead of using a single set-based SQL statement. |
 | **Set-based** | Processing all qualifying rows in a single SQL statement rather than iterating row-by-row. Typically 100-1000x faster. |
-| **Temp Table Statistics** | Metadata (row count, cardinality) that the optimizer uses to choose join strategies. Newly populated temp tables lack statistics until explicitly collected. |
+| **Complex Join Graph** | A deeply nested CTE or multi-table JOIN where the optimizer makes suboptimal build/probe side assignments. Snowflake maintains row count statistics immediately after DML, but complex join graphs can still cause incorrect broadcast decisions regardless. Breaking into explicit materialized steps resolves this by forcing independent per-step planning. |
 | **P0 / P1 / P2** | Priority levels. P0 = critical, fix immediately. P1 = important, fix in next release. P2 = low priority, optimize when convenient. |
 ```
 
