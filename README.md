@@ -78,13 +78,14 @@ The skill will pause at key decision points for your input before proceeding.
 | # | Pattern | Severity | Risk to Fix | Example Signal |
 |---|---------|----------|-------------|----------------|
 | 1 | Row-at-a-time cursor loop | [CRITICAL] P0 | MODERATE | 1000+ children, same hash, 1 row each |
-| 2 | Missing temp table statistics | [CRITICAL] P0 | SAFE | >5 broadcast joins after temp table populate |
+| 2 | Complex join graph — optimizer build/probe suboptimality | [CRITICAL] P0 | SAFE | >5 broadcast joins in complex multi-way JOIN or deep CTE |
 | 3 | Join explosion / fan-out | [CRITICAL] P0 | MODERATE | Billions inserted → DISTINCT to thousands |
 | 4 | Serial UPDATE chain | [WARNING] P1 | LOW | 10-30 UPDATEs on same table, different columns |
 | 5 | CDC DELETE on unclustered table | [CRITICAL] P0 | SAFE | DELETE scans full large table |
 | 6 | Serial execution of independent work | [WARNING] P1 | MODERATE | Many independent statements run sequentially |
 | 7 | Repeated identical join (N x 1 calls) | [WARNING] P1 | LOW | N identical CALLs differing only by filter value |
 | 8 | MERGE on unclustered target table | [CRITICAL] P0 | SAFE | MERGE full table scan, partition pruning ratio near 100% |
+| 9 | Temp table name shadowing (misdiagnosis trap) | [CRITICAL] P0 (correctness) | LOW | Temp table shadows permanent table/view with same name |
 
 ## Output Files
 
@@ -129,7 +130,7 @@ query-performance-deep-dive/
 ├── README.md                         # This file
 └── references/
     ├── snowhouse-queries.md          # SNOWHOUSE view reference, STATS patterns, new query templates
-    └── anti-patterns.md              # 8 anti-patterns with severity badges, confidence guidance, risk ratings, related reading
+    └── anti-patterns.md              # 9 anti-patterns with severity badges, confidence guidance, risk ratings, related reading
 ```
 
 Output files per investigation:
